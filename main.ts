@@ -8,8 +8,9 @@
 // harness output directory and re-reads the file to prove the bytes
 // survived the round trip.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 // The error line, exactly as it will be judged: the database left, the
 // data is fine, only our dignity took the hit.
@@ -33,11 +34,42 @@ function assertValid(line: string): number {
   if (line.trim() === "") {
     throw new Error("error line must not be blank");
   }
+  if (line !== line.trimEnd()) {
+    throw new Error("error line must not end with whitespace");
+  }
+  if (line !== line.trimStart()) {
+    throw new Error("error line must not start with whitespace");
+  }
+  for (const ch of line) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20 || code === 0x7f) {
+      throw new Error(
+        `error line must not contain control characters (U+${code.toString(16).padStart(4, "0")})`,
+      );
+    }
+  }
   return count;
 }
 
 function run(): void {
   const count = assertValid(LINE);
+
+  // Determinism self-check: write the line twice to a scratch directory
+  // and byte-compare the copies before touching the real output. A
+  // non-deterministic render would fail here instead of shipping a
+  // different entry than the one that was validated.
+  const scratch = mkdtempSync(join(tmpdir(), "entry-determinism-"));
+  try {
+    const first = join(scratch, "first.txt");
+    const second = join(scratch, "second.txt");
+    writeFileSync(first, LINE, { encoding: "utf8" });
+    writeFileSync(second, LINE, { encoding: "utf8" });
+    if (readFileSync(first).compare(readFileSync(second)) !== 0) {
+      throw new Error("determinism check failed: repeated writes differ");
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 
   const dir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
   const target = resolve(dir, "entry.txt");
